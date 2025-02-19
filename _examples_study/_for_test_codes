@@ -1,0 +1,10 @@
+DXL_IDS                     = [1, 2, 3, 4, 11]
+param_goal_positions = [0] * len(DXL_IDS)
+
+for i in range(len(param_goal_positions)) :
+    print(param_goal_positions[i])
+    
+    
+a,b = 1,1
+
+print(a,b)

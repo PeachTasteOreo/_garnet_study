@@ -1,0 +1,138 @@
+
+#다이나믹셀 기본 설정
+import os
+
+if os.name == 'nt':
+    import msvcrt
+    def getch():
+        return msvcrt.getch().decode()
+else:
+    import sys, tty, termios
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    def getch():
+        try:
+            tty.setraw(sys.stdin.fileno())
+            ch = sys.stdin.read(1)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        return ch
+
+from dynamixel_sdk import * # Uses Dynamixel SDK library
+
+
+MY_DXL = 'X_SERIES'
+ADDR_TORQUE_ENABLE          = 64 #OK
+ADDR_GOAL_POSITION          = 116 #OK
+LEN_GOAL_POSITION           = 4         # Data Byte Length
+ADDR_PRESENT_POSITION       = 132 #OK
+LEN_PRESENT_POSITION        = 4         # Data Byte Length
+DXL_MINIMUM_POSITION_VALUE  = 0 #OK         # Refer to the Minimum Position Limit of product eManual 
+DXL_MAXIMUM_POSITION_VALUE  = 4095 #OK      # Refer to the Maximum Position Limit of product eManual
+BAUDRATE                    = 57600 #OK
+
+PROTOCOL_VERSION            = 2.0
+
+DEVICENAME                  = "COM3"
+TORQUE_ENABLE               = 1     # Value for enabling the torque
+TORQUE_DISABLE              = 0     # Value for disabling the torque
+DXL_MOVING_STATUS_THRESHOLD = 10
+
+DXL1_ID                      = 1
+DXL2_ID                      = 7
+
+index = 0
+dxl_goal_position = [DXL_MINIMUM_POSITION_VALUE, DXL_MAXIMUM_POSITION_VALUE]         # Goal position
+
+# Initialize PortHandler instance
+portHandler = PortHandler(DEVICENAME)
+
+# Initialize PacketHandler instance
+packetHandler = PacketHandler(PROTOCOL_VERSION)
+
+# Initialize GroupSyncWrite instance
+groupSyncWrite = GroupSyncWrite(portHandler, packetHandler, ADDR_GOAL_POSITION, LEN_GOAL_POSITION)
+
+# Initialize GroupSyncRead instace for Present Position
+groupSyncRead = GroupSyncRead(portHandler, packetHandler, ADDR_PRESENT_POSITION, LEN_PRESENT_POSITION)
+
+
+
+def check_result(result, error, success_msg, fail_msg):
+    if result != COMM_SUCCESS:
+        print(packetHandler.getTxRxResult(result))
+    elif error != 0:
+        print(packetHandler.getRxPacketError(error))
+    else:
+        print(success_msg)
+
+def enable_torque(dxl_id):
+    result, error = packetHandler.write1ByteTxRx(portHandler, dxl_id, ADDR_TORQUE_ENABLE, TORQUE_ENABLE)
+    check_result(result, error, f"Dynamixel#{dxl_id} has been successfully connected", f"Failed to enable torque for Dynamixel#{dxl_id}")
+
+def add_param(dxl_id):
+    if not groupSyncRead.addParam(dxl_id):
+        print(f"[ID:{dxl_id:03d}] groupSyncRead addparam failed")
+        quit()
+
+def disable_torque(dxl_id):
+    result, error = packetHandler.write1ByteTxRx(portHandler, dxl_id, ADDR_TORQUE_ENABLE, TORQUE_DISABLE)
+    check_result(result, error, f"Dynamixel#{dxl_id} torque disabled", f"Failed to disable torque for Dynamixel#{dxl_id}")
+
+def sync_write_goal_position(dxl_ids, goal_position):
+    param_goal_position = [
+        DXL_LOBYTE(DXL_LOWORD(goal_position)),
+        DXL_HIBYTE(DXL_LOWORD(goal_position)),
+        DXL_LOBYTE(DXL_HIWORD(goal_position)),
+        DXL_HIBYTE(DXL_HIWORD(goal_position)),
+    ]
+    for dxl_id in dxl_ids:
+        if not groupSyncWrite.addParam(dxl_id, param_goal_position):
+            print(f"[ID:{dxl_id:03d}] groupSyncWrite addparam failed")
+            quit()
+    if groupSyncWrite.txPacket() != COMM_SUCCESS:
+        print(packetHandler.getTxRxResult(groupSyncWrite.txPacket()))
+    groupSyncWrite.clearParam()
+
+def read_present_position(dxl_ids):
+    if groupSyncRead.txRxPacket() != COMM_SUCCESS:
+        print(packetHandler.getTxRxResult(groupSyncRead.txRxPacket()))
+    positions = {}
+    for dxl_id in dxl_ids:
+        if not groupSyncRead.isAvailable(dxl_id, ADDR_PRESENT_POSITION, LEN_PRESENT_POSITION):
+            print(f"[ID:{dxl_id:03d}] groupSyncRead getdata failed")
+            quit()
+        positions[dxl_id] = groupSyncRead.getData(dxl_id, ADDR_PRESENT_POSITION, LEN_PRESENT_POSITION)
+    return positions
+
+# Main code
+if portHandler.openPort() and portHandler.setBaudRate(BAUDRATE):
+    print("Port opened and baudrate set")
+else:
+    print("Failed to open port or set baudrate")
+    quit()
+
+enable_torque(DXL1_ID)
+enable_torque(DXL2_ID)
+add_param(DXL1_ID)
+add_param(DXL2_ID)
+
+index = 0
+dxl_ids = [DXL1_ID, DXL2_ID]
+while True:
+    print("Press any key to continue! (or press ESC to quit!)")
+    if getch() == chr(0x1b): break
+
+    sync_write_goal_position(dxl_ids, dxl_goal_position[index])
+    while True:
+        positions = read_present_position(dxl_ids)
+        print(f"[ID:{DXL1_ID:03d}] GoalPos:{dxl_goal_position[index]:03d}  PresPos:{positions[DXL1_ID]:03d}\t"
+              f"[ID:{DXL2_ID:03d}] GoalPos:{dxl_goal_position[index]:03d}  PresPos:{positions[DXL2_ID]:03d}")
+        if all(abs(dxl_goal_position[index] - positions[dxl_id]) <= DXL_MOVING_STATUS_THRESHOLD for dxl_id in dxl_ids):
+            break
+    index = 1 - index
+
+groupSyncRead.clearParam()
+disable_torque(DXL1_ID)
+disable_torque(DXL2_ID)
+portHandler.closePort()
